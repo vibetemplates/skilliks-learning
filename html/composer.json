@@ -1,0 +1,15 @@
+{
+    "name": "skilliks/project-tracker",
+    "description": "SkillikS Project Tracker Application",
+    "type": "project",
+    "require": {
+        "php": ">=7.4",
+        "mailersend/mailersend": "^0.24",
+        "guzzlehttp/guzzle": "^7.9"
+    },
+    "autoload": {
+        "psr-4": {
+            "App\\": "classes/"
+        }
+    }
+}

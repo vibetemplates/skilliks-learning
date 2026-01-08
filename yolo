@@ -1,0 +1,1 @@
+claude --continue --print "$1" --dangerously-skip-permissions --verbose --output-format stream-json | jq

@@ -1,0 +1,161 @@
+<?php
+/**
+ * Leaderboard Page
+ * 
+ * Shows community activity leaderboard
+ */
+
+$page_title = 'Leaderboard';
+require_once 'includes/session.php';
+require_once 'config/database.php';
+require_once 'config/functions.php';
+
+// Require login
+requireLogin();
+
+$communityId = getCurrentCommunityId();
+$db = getDB();
+
+// Get task completion leaderboard
+$stmt = $db->prepare("
+    SELECT 
+        u.id,
+        u.first_name,
+        u.last_name,
+        CONCAT(u.first_name, ' ', u.last_name) as name,
+        u.profile_photo,
+        COUNT(DISTINCT t.id) as completed_tasks,
+        COUNT(DISTINCT f.id) as features_submitted,
+        COUNT(DISTINCT c.id) as comments_made
+    FROM users u
+    JOIN community_members cm ON u.id = cm.user_id
+    LEFT JOIN task_assignments ta ON u.id = ta.user_id
+    LEFT JOIN tasks t ON ta.task_id = t.id AND t.status = 'done'
+    LEFT JOIN features f ON u.id = f.submitted_by AND f.community_id = :community_id
+    LEFT JOIN comments c ON u.id = c.user_id AND c.community_id = :community_id3
+    WHERE cm.community_id = :community_id2
+    AND cm.is_active = 1
+    GROUP BY u.id
+    ORDER BY completed_tasks DESC, features_submitted DESC, comments_made DESC
+    LIMIT 20
+");
+$stmt->execute([
+    ':community_id' => $communityId,
+    ':community_id2' => $communityId,
+    ':community_id3' => $communityId
+]);
+$leaderboard = $stmt->fetchAll();
+
+require_once 'includes/header.php';
+?>
+
+<!-- Main content -->
+<main class="container-fluid px-4">
+    <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+        <h1 class="h2">Leaderboard</h1>
+        <div class="btn-toolbar mb-2 mb-md-0">
+            <div class="btn-group me-2">
+                <button type="button" class="btn btn-sm btn-outline-secondary active">All Time</button>
+                <button type="button" class="btn btn-sm btn-outline-secondary">This Month</button>
+                <button type="button" class="btn btn-sm btn-outline-secondary">This Week</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="row">
+        <div class="col-lg-8">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="mb-0">Top Contributors</h5>
+                </div>
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-hover">
+                            <thead>
+                                <tr>
+                                    <th width="50">Rank</th>
+                                    <th>Member</th>
+                                    <th class="text-center">Tasks Completed</th>
+                                    <th class="text-center">Features Submitted</th>
+                                    <th class="text-center">Comments</th>
+                                    <th class="text-center">Total Score</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($leaderboard as $index => $member): 
+                                    $score = ($member['completed_tasks'] * 10) + 
+                                            ($member['features_submitted'] * 5) + 
+                                            ($member['comments_made'] * 1);
+                                ?>
+                                <tr>
+                                    <td>
+                                        <?php if ($index < 3): ?>
+                                            <span class="badge bg-<?php echo $index === 0 ? 'warning' : ($index === 1 ? 'secondary' : 'danger'); ?>">
+                                                <?php echo $index + 1; ?>
+                                            </span>
+                                        <?php else: ?>
+                                            <?php echo $index + 1; ?>
+                                        <?php endif; ?>
+                                    </td>
+                                    <td>
+                                        <div class="d-flex align-items-center">
+                                            <img src="serve-avatar.php?user_id=<?php echo $member['id']; ?>" 
+                                                 alt="<?php echo htmlspecialchars($member['name']); ?>" 
+                                                 class="rounded-circle me-2" 
+                                                 width="32" 
+                                                 height="32"
+                                                 style="object-fit: cover;">
+                                            <?php echo htmlspecialchars($member['name']); ?>
+                                        </div>
+                                    </td>
+                                    <td class="text-center"><?php echo $member['completed_tasks']; ?></td>
+                                    <td class="text-center"><?php echo $member['features_submitted']; ?></td>
+                                    <td class="text-center"><?php echo $member['comments_made']; ?></td>
+                                    <td class="text-center">
+                                        <strong><?php echo $score; ?></strong>
+                                    </td>
+                                </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-4">
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h5 class="mb-0">Scoring System</h5>
+                </div>
+                <div class="card-body">
+                    <ul class="list-unstyled mb-0">
+                        <li class="mb-2">
+                            <i class="bi bi-check-circle text-success"></i> 
+                            <strong>Task Completed:</strong> 10 points
+                        </li>
+                        <li class="mb-2">
+                            <i class="bi bi-lightbulb text-warning"></i> 
+                            <strong>Feature Submitted:</strong> 5 points
+                        </li>
+                        <li class="mb-2">
+                            <i class="bi bi-chat-dots text-info"></i> 
+                            <strong>Comment Made:</strong> 1 point
+                        </li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="mb-0">Achievements</h5>
+                </div>
+                <div class="card-body">
+                    <p class="text-muted">Coming soon...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</main>
+
+<?php require_once 'includes/footer.php'; ?>

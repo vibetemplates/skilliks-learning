@@ -1,0 +1,66 @@
+# SkillikS Project Tracker - URL Rewriting Rules
+# This file removes .php extensions from URLs while maintaining compatibility
+
+# Enable the Apache rewrite engine
+RewriteEngine On
+
+# Security: Prevent direct access to sensitive directories
+# Returns 403 Forbidden for these directories
+RewriteRule ^(config|classes|includes|vendor|migrations|database|sql)/ - [F,L]
+
+# Don't process actual files that exist (images, CSS, JS, etc.)
+RewriteCond %{REQUEST_FILENAME} -f
+RewriteRule ^ - [L]
+
+# Don't process actual directories that exist
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteRule ^ - [L]
+
+# Specific routing for API v1
+RewriteRule ^api/v1/([^/]+)/?$ api/v1/index.php?endpoint=$1 [QSA,L]
+RewriteRule ^api/v1/([^/]+)/([0-9]+)/?$ api/v1/index.php?endpoint=$1&id=$2 [QSA,L]
+RewriteRule ^api/v1/([^/]+)/([0-9]+)/([^/]+)/?$ api/v1/index.php?endpoint=$1&id=$2&action=$3 [QSA,L]
+
+# Specific exclusions for API and AJAX endpoints
+# These should keep their .php extensions
+RewriteRule ^api/ - [L]
+RewriteRule ^ajax/ - [L]
+
+# Route all requests through router.php for custom URLs
+# This allows us to handle dynamic slugs like /beginners-series or /edward-honour
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^(.*)$ router.php [QSA,L]
+
+# Optional: Add trailing slash to directories (except for root)
+# This ensures /tickets/ works the same as /tickets
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteCond %{REQUEST_URI} !/$
+RewriteCond %{REQUEST_URI} !^/$
+RewriteRule ^(.+)$ $1/ [L]
+
+# Security headers (bonus security features)
+<IfModule mod_headers.c>
+    # Prevent clickjacking
+    Header always set X-Frame-Options "SAMEORIGIN"
+    
+    # Prevent MIME type sniffing
+    Header always set X-Content-Type-Options "nosniff"
+    
+    # Enable XSS protection
+    Header always set X-XSS-Protection "1; mode=block"
+</IfModule>
+
+# Error handling - use default error pages
+ErrorDocument 404 /404.php
+ErrorDocument 403 /403.php
+ErrorDocument 500 /500.php
+
+# PHP settings (if allowed by hosting)
+<IfModule mod_php.c>
+    # Hide PHP version
+    php_flag expose_php Off
+    
+    # Set session cookie to httponly
+    php_flag session.cookie_httponly On
+</IfModule>

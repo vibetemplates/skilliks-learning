@@ -1,0 +1,59 @@
+<?php
+/**
+ * API Endpoint: Delete a message (soft delete)
+ * Method: POST
+ * Parameters: message_id
+ * Returns: success status
+ */
+
+require_once '../../includes/session.php';
+require_once '../../includes/messaging_functions.php';
+
+// Check authentication
+requireLogin();
+
+// Only POST method allowed
+if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+    http_response_code(405);
+    echo json_encode(['error' => 'Method not allowed']);
+    exit;
+}
+
+// Get JSON input
+$input = json_decode(file_get_contents('php://input'), true);
+
+// Validate input
+$message_id = isset($input['message_id']) ? (int)$input['message_id'] : 0;
+
+if (!$message_id) {
+    http_response_code(400);
+    echo json_encode(['error' => 'Message ID required']);
+    exit;
+}
+
+// Get current user
+$user_id = getCurrentUserId();
+
+try {
+    // Delete message
+    $success = deleteMessage($message_id, $user_id);
+    
+    if (!$success) {
+        http_response_code(403);
+        echo json_encode(['error' => 'Cannot delete this message']);
+        exit;
+    }
+    
+    $response = [
+        'success' => true,
+        'message_id' => $message_id
+    ];
+    
+    header('Content-Type: application/json');
+    echo json_encode($response);
+    
+} catch (Exception $e) {
+    http_response_code(500);
+    echo json_encode(['error' => 'Failed to delete message']);
+}
+?>

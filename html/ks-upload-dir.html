@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>    
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chunk Upload of Entire Directories</title>
+</head>
+<body>
+
+    <input type="file" id="fileInput" webkitdirectory directory multiple />
+       <button id="uploadButton" onclick="uploadFiles()">Upload Directory</button>
+          <div id="uploadStatus"></div>
+          <div id="uploadProgress"></div>
+          <div id="uploadMessage"></div>
+
+    <script>
+
+          async function uploadFile(file) {
+          const uploadButton = document.getElementById('uploadButton');
+          const uploadProgress = document.getElementById('uploadProgress');
+          const uploadMessage = document.getElementById('uploadMessage');
+
+          const chunkSize = 1024 * 1024 * 2; // 2MB
+          let offset = 0;
+
+          uploadButton.disabled = true;
+          uploadMessage.textContent = '';
+
+		            async function uploadChunk() {
+            if (offset < file.size) {
+                const chunk = file.slice(offset, Math.min(offset + chunkSize, file.size)); // Ensure the last chunk is correctly handled
+                const formData = new FormData();
+                formData.append('fileChunk', chunk);
+                formData.append('fileName', file.name);
+                formData.append('fileSize', file.size);
+                formData.append('chunkOffset', offset);
+                formData.append('justPath', file.webkitRelativePath);
+                formData.append('path', file.webkitRelativePath || file.name);
+
+                try {
+                    const response = await fetch('ks-upload.php', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    const data = await response.text();
+                    console.log(data);
+                    offset += chunk.size; // Update the offset by the actual chunk size
+                    const progressPercentage = Math.min(100, (offset / file.size) * 100).toFixed(2);
+                    uploadProgress.textContent = `Upload progress: ${progressPercentage}%`;
+
+                    await uploadChunk(); // Recursively call to upload the next chunk
+                    } catch (error) {
+                        console.error('Error uploading chunk:', error);
+                        uploadMessage.textContent = 'Error during upload. Please try again.';
+                        uploadButton.disabled = false; // Re-enable the button on error
+                        throw error; // Stop execution and throw error to exit the loop
+                    }
+            } else {
+                // This block now correctly executes after the last chunk has been uploaded
+                uploadMessage.textContent = "Upload complete";
+               uploadButton.disabled = false; // Re-enable the button
+            }
+        }
+
+        await uploadChunk();
+     }
+
+    async function uploadFiles() {
+        const fileInput = document.getElementById('fileInput');
+        const uploadStatus = document.getElementById('uploadStatus');
+        const files = fileInput.files;
+        const totalFiles = files.length;
+        let uploadedCount = 0;
+
+        // Disable the upload button to prevent multiple submissions
+        document.getElementById('uploadButton').disabled = true;
+        uploadStatus.innerHTML = ""; // Clear previous status
+
+        for (const file of files) {
+            await uploadFile(file);
+            uploadedCount++;
+            uploadStatus.innerHTML = `${file.webkitRelativePath || file.name} uploaded successfully. (${uploadedCount}/${files.length})<br/>`;
+        }
+    }
+
+</script>
+
+</body>
+</html>

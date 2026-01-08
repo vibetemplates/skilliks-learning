@@ -1,0 +1,17 @@
+# Allow image files to be served
+<FilesMatch "\.(jpg|jpeg|png|gif|webp|svg|ico)$">
+    Order Allow,Deny
+    Allow from all
+</FilesMatch>
+
+# Prevent PHP execution in uploads directory
+<FilesMatch "\.ph(p[3-7]?|t|tml)$">
+    Order Deny,Allow
+    Deny from all
+</FilesMatch>
+
+# Prevent executable files
+<FilesMatch "\.(exe|msi|bat|cmd|sh)$">
+    Order Deny,Allow
+    Deny from all
+</FilesMatch>

@@ -1,0 +1,34 @@
+{
+    "/communities": {
+        "page": "communities.php",
+        "params": {}
+    },
+    "/courses": {
+        "page": "courses.php",
+        "params": {}
+    },
+    "/programs": {
+        "page": "programs.php",
+        "params": {}
+    },
+    "/projects": {
+        "page": "projects.php",
+        "params": {}
+    },
+    "/blog": {
+        "page": "blog.php",
+        "params": {}
+    },
+    "/team": {
+        "page": "team-members.php",
+        "params": {}
+    },
+    "/about": {
+        "page": "about.php",
+        "params": {}
+    },
+    "/contact": {
+        "page": "contact.php",
+        "params": {}
+    }
+}

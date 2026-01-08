@@ -1,0 +1,1550 @@
+<?php
+/**
+ * Projects Page
+ * 
+ * Lists all projects with join functionality
+ */
+
+$page_title = 'Projects';
+require_once 'includes/session.php';
+require_once 'config/database.php';
+require_once 'config/functions.php';
+require_once 'classes/Project.php';
+require_once 'classes/User.php';
+require_once 'classes/Task.php';
+
+// Require login
+requireLogin();
+
+$projectObj = new Project();
+
+// Get all available skills for filter dropdown
+try {
+    $db = getDB();
+    $stmt = $db->prepare("
+        SELECT DISTINCT s.id, s.name, s.category 
+        FROM skills s
+        JOIN project_skills ps ON s.id = ps.skill_id
+        WHERE s.is_active = 1
+        ORDER BY s.category, s.name
+    ");
+    $stmt->execute();
+    $availableSkills = $stmt->fetchAll();
+} catch (PDOException $e) {
+    $availableSkills = [];
+}
+
+// Handle project creation (if user has permission)
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'create') {
+    $name = trim($_POST['name'] ?? '');
+    $description = trim($_POST['description'] ?? '');
+    $course_code = trim($_POST['course_code'] ?? '');
+    $git_repository_url = trim($_POST['git_repository_url'] ?? '');
+    
+    if (empty($name)) {
+        setFlashMessage('error', 'Project name is required.');
+    } else {
+        $data = [
+            'name' => $name,
+            'description' => $description,
+            'course_code' => $course_code,
+            'team_size_limit' => 10, // Keep default value for DB
+            'git_repository_url' => $git_repository_url,
+            'created_by' => getCurrentUserId()
+        ];
+        
+        try {
+            $projectId = $projectObj->create($data);
+            if ($projectId) {
+                setFlashMessage('success', 'Project created successfully!');
+                header('Location: /project-detail.php?id=' . $projectId);
+                exit;
+            } else {
+                setFlashMessage('error', 'Failed to create project.');
+            }
+        } catch (Exception $e) {
+            setFlashMessage('error', 'Failed to create project: ' . $e->getMessage());
+            error_log("Project creation exception: " . $e->getMessage());
+        }
+    }
+}
+
+// Pagination settings
+$projectsPerPage = 5;
+$activePage = max(1, (int)($_GET['active_page'] ?? 1));
+$myPage = max(1, (int)($_GET['my_page'] ?? 1));
+$pendingPage = max(1, (int)($_GET['pending_page'] ?? 1));
+
+// Get current user ID
+$currentUserId = getCurrentUserId();
+
+// Get projects for each tab
+$activeProjects = $projectObj->findActiveProjects($currentUserId);
+$myProjects = $projectObj->findMyProjects($currentUserId);
+$pendingProjects = $projectObj->findPendingProjects($currentUserId);
+
+// Add skill IDs to each project for filtering
+function addSkillIds(&$projects) {
+    foreach ($projects as &$project) {
+        try {
+            $db = getDB();
+            $stmt = $db->prepare("
+                SELECT skill_id 
+                FROM project_skills 
+                WHERE project_id = ? AND importance_level = 'required'
+            ");
+            $stmt->execute([$project['id']]);
+            $project['required_skill_ids'] = array_column($stmt->fetchAll(), 'skill_id');
+        } catch (PDOException $e) {
+            $project['required_skill_ids'] = [];
+        }
+    }
+}
+
+addSkillIds($activeProjects);
+addSkillIds($myProjects);
+addSkillIds($pendingProjects);
+
+// Add user tasks to my projects
+$taskObj = new Task();
+foreach ($myProjects as &$project) {
+    try {
+        $db = getDB();
+        $stmt = $db->prepare("
+            SELECT t.id, t.title, t.status, t.priority, t.due_date
+            FROM tasks t
+            JOIN task_assignments ta ON t.id = ta.task_id
+            WHERE t.project_id = ? AND ta.user_id = ? AND ta.unassigned_at IS NULL
+            ORDER BY 
+                CASE t.status 
+                    WHEN 'in_progress' THEN 1
+                    WHEN 'todo' THEN 2
+                    WHEN 'done' THEN 3
+                END,
+                t.due_date ASC
+            LIMIT 5
+        ");
+        $stmt->execute([$project['id'], $currentUserId]);
+        $project['user_tasks'] = $stmt->fetchAll();
+    } catch (PDOException $e) {
+        $project['user_tasks'] = [];
+    }
+}
+
+// Calculate pagination for active projects
+$totalActiveProjects = count($activeProjects);
+$totalActivePages = ceil($totalActiveProjects / $projectsPerPage);
+$activeOffset = ($activePage - 1) * $projectsPerPage;
+$paginatedActiveProjects = array_slice($activeProjects, $activeOffset, $projectsPerPage);
+
+// Calculate pagination for my projects
+$totalMyProjects = count($myProjects);
+$totalMyPages = ceil($totalMyProjects / $projectsPerPage);
+$myOffset = ($myPage - 1) * $projectsPerPage;
+$paginatedMyProjects = array_slice($myProjects, $myOffset, $projectsPerPage);
+
+// Calculate pagination for pending projects
+$totalPendingProjects = count($pendingProjects);
+$totalPendingPages = ceil($totalPendingProjects / $projectsPerPage);
+$pendingOffset = ($pendingPage - 1) * $projectsPerPage;
+$paginatedPendingProjects = array_slice($pendingProjects, $pendingOffset, $projectsPerPage);
+
+// Fetch additional data for paginated projects
+function fetchProjectData(&$projects, $projectObj) {
+    foreach ($projects as &$project) {
+        $project['recommended_courses'] = $projectObj->getRecommendedCourses($project['id']);
+        $project['required_courses'] = $projectObj->getRequiredCourses($project['id']);
+        if (!isset($project['skills'])) {
+            $project['skills'] = $projectObj->getProjectSkills($project['id']);
+        }
+    }
+}
+
+fetchProjectData($paginatedActiveProjects, $projectObj);
+fetchProjectData($paginatedMyProjects, $projectObj);
+fetchProjectData($paginatedPendingProjects, $projectObj);
+
+require_once 'includes/header.php';
+?>
+
+<!-- Main content -->
+<main class="container-fluid px-4">
+            <div id="projects-header" class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+                <h1 class="h2">Projects</h1>
+                <div id="projects-toolbar" class="btn-toolbar mb-2 mb-md-0">
+                    <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#createProjectModal">
+                        <i class="bi bi-plus-circle"></i> New Project
+                    </button>
+                </div>
+            </div>
+
+
+            <!-- Skill Filter -->
+            <div class="row mb-4">
+                <div class="col-md-4">
+                    <label for="skillFilter" class="form-label">Filter by Required Skill:</label>
+                    <select class="form-select" id="skillFilter">
+                        <option value="">All Skills</option>
+                        <?php 
+                        $currentCategory = '';
+                        foreach ($availableSkills as $skill): 
+                            if ($skill['category'] !== $currentCategory):
+                                if ($currentCategory !== ''): ?>
+                                    </optgroup>
+                                <?php endif;
+                                $currentCategory = $skill['category'];
+                                ?>
+                                <optgroup label="<?php echo htmlspecialchars($currentCategory); ?>">
+                            <?php endif; ?>
+                            <option value="<?php echo $skill['id']; ?>"><?php echo htmlspecialchars($skill['name']); ?></option>
+                        <?php endforeach; 
+                        if ($currentCategory !== ''): ?>
+                            </optgroup>
+                        <?php endif; ?>
+                    </select>
+                </div>
+            </div>
+
+            <!-- Project Tabs -->
+            <ul class="nav nav-tabs mb-3" id="projectTabs" role="tablist">
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link active" id="active-projects-tab" data-bs-toggle="tab" data-bs-target="#active-projects" type="button" role="tab">
+                        <i class="bi bi-play-circle"></i> Active Projects
+                        <span class="badge bg-success ms-1"><?php echo $totalActiveProjects; ?></span>
+                    </button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="my-projects-tab" data-bs-toggle="tab" data-bs-target="#my-projects" type="button" role="tab">
+                        <i class="bi bi-person-circle"></i> My Projects
+                        <span class="badge bg-primary ms-1"><?php echo $totalMyProjects; ?></span>
+                    </button>
+                </li>
+                <?php if (count($pendingProjects) > 0): ?>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="pending-projects-tab" data-bs-toggle="tab" data-bs-target="#pending-projects" type="button" role="tab">
+                        <i class="bi bi-hourglass-split"></i> Pending Projects
+                        <span class="badge bg-warning text-dark ms-1"><?php echo $totalPendingProjects; ?></span>
+                    </button>
+                </li>
+                <?php endif; ?>
+            </ul>
+
+            <!-- Tab Content -->
+            <div id="projectTabContent" class="tab-content">
+                <!-- Active Projects Tab -->
+                <div class="tab-pane fade show active" id="active-projects" role="tabpanel">
+                    <?php if (empty($paginatedActiveProjects)): ?>
+                        <div id="no-active-projects-alert" class="alert alert-info fade-in">
+                            <i class="bi bi-info-circle"></i>
+                            No active projects available.
+                        </div>
+                    <?php else: ?>
+                        <div id="active-projects-list" class="list-group">
+                            <?php foreach ($paginatedActiveProjects as $project): ?>
+                                <?php include 'includes/project-item.php'; ?>
+                            <?php endforeach; ?>
+                        </div>
+                    <?php endif; ?>
+                    
+                    <!-- Pagination for Active Projects -->
+                    <?php if ($totalActivePages > 1): ?>
+                        <nav aria-label="Active Projects pagination" class="mt-4">
+                            <ul class="pagination justify-content-center">
+                                <?php if ($activePage > 1): ?>
+                                    <li class="page-item">
+                                        <a class="page-link" href="?active_page=<?php echo $activePage - 1; ?>" aria-label="Previous">
+                                            <span aria-hidden="true">&laquo;</span>
+                                        </a>
+                                    </li>
+                                <?php endif; ?>
+                                
+                                <?php for ($i = 1; $i <= $totalActivePages; $i++): ?>
+                                    <li class="page-item <?php echo $i == $activePage ? 'active' : ''; ?>">
+                                        <a class="page-link" href="?active_page=<?php echo $i; ?>">
+                                            <?php echo $i; ?>
+                                        </a>
+                                    </li>
+                                <?php endfor; ?>
+                                
+                                <?php if ($activePage < $totalActivePages): ?>
+                                    <li class="page-item">
+                                        <a class="page-link" href="?active_page=<?php echo $activePage + 1; ?>" aria-label="Next">
+                                            <span aria-hidden="true">&raquo;</span>
+                                        </a>
+                                    </li>
+                                <?php endif; ?>
+                            </ul>
+                        </nav>
+                        
+                        <!-- Pagination info -->
+                        <div class="text-center text-muted small">
+                            Showing <?php echo $activeOffset + 1; ?> to <?php echo min($activeOffset + $projectsPerPage, $totalActiveProjects); ?> of <?php echo $totalActiveProjects; ?> projects
+                        </div>
+                    <?php endif; ?>
+                </div>
+                
+                <!-- My Projects Tab -->
+                <div class="tab-pane fade" id="my-projects" role="tabpanel">
+                    <?php if (empty($paginatedMyProjects)): ?>
+                        <div id="no-my-projects-alert" class="alert alert-info fade-in">
+                            <i class="bi bi-info-circle"></i>
+                            You haven't joined any projects yet. Browse active projects to get started.
+                        </div>
+                    <?php else: ?>
+                        <div id="my-projects-list" class="list-group">
+                            <?php foreach ($paginatedMyProjects as $project): ?>
+                                <?php include 'includes/project-item.php'; ?>
+                            <?php endforeach; ?>
+                        </div>
+                    <?php endif; ?>
+                    
+                    <!-- Pagination for My Projects -->
+                    <?php if ($totalMyPages > 1): ?>
+                        <nav aria-label="My Projects pagination" class="mt-4">
+                            <ul class="pagination justify-content-center">
+                                <?php if ($myPage > 1): ?>
+                                    <li class="page-item">
+                                        <a class="page-link" href="?my_page=<?php echo $myPage - 1; ?>" aria-label="Previous">
+                                            <span aria-hidden="true">&laquo;</span>
+                                        </a>
+                                    </li>
+                                <?php endif; ?>
+                                
+                                <?php for ($i = 1; $i <= $totalMyPages; $i++): ?>
+                                    <li class="page-item <?php echo $i == $myPage ? 'active' : ''; ?>">
+                                        <a class="page-link" href="?my_page=<?php echo $i; ?>">
+                                            <?php echo $i; ?>
+                                        </a>
+                                    </li>
+                                <?php endfor; ?>
+                                
+                                <?php if ($myPage < $totalMyPages): ?>
+                                    <li class="page-item">
+                                        <a class="page-link" href="?my_page=<?php echo $myPage + 1; ?>" aria-label="Next">
+                                            <span aria-hidden="true">&raquo;</span>
+                                        </a>
+                                    </li>
+                                <?php endif; ?>
+                            </ul>
+                        </nav>
+                        
+                        <!-- Pagination info -->
+                        <div class="text-center text-muted small">
+                            Showing <?php echo $myOffset + 1; ?> to <?php echo min($myOffset + $projectsPerPage, $totalMyProjects); ?> of <?php echo $totalMyProjects; ?> projects
+                        </div>
+                    <?php endif; ?>
+                </div>
+                
+                <!-- Pending Projects Tab -->
+                <div class="tab-pane fade" id="pending-projects" role="tabpanel">
+                    <?php if (empty($paginatedPendingProjects)): ?>
+                        <div id="no-pending-projects-alert" class="alert alert-info fade-in">
+                            <i class="bi bi-info-circle"></i>
+                            No pending projects to review.
+                        </div>
+                    <?php else: ?>
+                        <div id="pending-projects-list" class="list-group">
+                            <?php foreach ($paginatedPendingProjects as $project): ?>
+                                <?php include 'includes/project-item.php'; ?>
+                            <?php endforeach; ?>
+                        </div>
+                    <?php endif; ?>
+                    
+                    <!-- Pagination for Pending Projects -->
+                    <?php if ($totalPendingPages > 1): ?>
+                        <nav aria-label="Pending Projects pagination" class="mt-4">
+                            <ul class="pagination justify-content-center">
+                                <?php if ($pendingPage > 1): ?>
+                                    <li class="page-item">
+                                        <a class="page-link" href="?pending_page=<?php echo $pendingPage - 1; ?>" aria-label="Previous">
+                                            <span aria-hidden="true">&laquo;</span>
+                                        </a>
+                                    </li>
+                                <?php endif; ?>
+                                
+                                <?php for ($i = 1; $i <= $totalPendingPages; $i++): ?>
+                                    <li class="page-item <?php echo $i == $pendingPage ? 'active' : ''; ?>">
+                                        <a class="page-link" href="?pending_page=<?php echo $i; ?>">
+                                            <?php echo $i; ?>
+                                        </a>
+                                    </li>
+                                <?php endfor; ?>
+                                
+                                <?php if ($pendingPage < $totalPendingPages): ?>
+                                    <li class="page-item">
+                                        <a class="page-link" href="?pending_page=<?php echo $pendingPage + 1; ?>" aria-label="Next">
+                                            <span aria-hidden="true">&raquo;</span>
+                                        </a>
+                                    </li>
+                                <?php endif; ?>
+                            </ul>
+                        </nav>
+                        
+                        <!-- Pagination info -->
+                        <div class="text-center text-muted small">
+                            Showing <?php echo $pendingOffset + 1; ?> to <?php echo min($pendingOffset + $projectsPerPage, $totalPendingProjects); ?> of <?php echo $totalPendingProjects; ?> projects
+                        </div>
+                    <?php endif; ?>
+                </div>
+            </div>
+            <!-- End of Tab Content -->
+
+</main>
+
+<!-- Create Project Modal -->
+                                        <div id="my-project-skills-<?php echo $project['id']; ?>" class="col-md-5">
+                                            <div class="row">
+                                                <!-- Required Skills Column -->
+                                                <div class="col-md-6">
+                                                    <?php if (!empty($project['skills'])): ?>
+                                                        <div>
+                                                            <h6 class="text-muted mb-2">Required Skills:</h6>
+                                                            <?php foreach ($project['skills'] as $skill): ?>
+                                                                <span class="badge bg-<?php echo $skill['importance_level'] == 'required' ? 'danger' : ($skill['importance_level'] == 'preferred' ? 'warning' : 'info'); ?> me-1 mb-1">
+                                                                    <?php echo htmlspecialchars($skill['name']); ?>
+                                                                    <?php if ($skill['importance_level'] == 'required'): ?>*<?php endif; ?>
+                                                                </span>
+                                                            <?php endforeach; ?>
+                                                        </div>
+                                                    <?php endif; ?>
+                                                </div>
+                                                
+                                                <!-- Recommended Courses Column -->
+                                                <div class="col-md-6">
+                                                    <?php if (!empty($project['recommended_courses'])): ?>
+                                                        <div>
+                                                            <h6 class="text-muted mb-2">Recommended Courses:</h6>
+                                                            <?php foreach (array_slice($project['recommended_courses'], 0, 3) as $course): ?>
+                                                                <div class="d-flex align-items-center mb-1">
+                                                                    <i class="bi bi-book text-muted me-2"></i>
+                                                                    <a href="/course-detail.php?id=<?php echo $course['id']; ?>" class="text-decoration-none">
+                                                                        <?php echo htmlspecialchars($course['title']); ?>
+                                                                    </a>
+                                                                    <span class="ms-2 badge bg-secondary"><?php echo $course['matching_skills']; ?> skills</span>
+                                                                </div>
+                                                            <?php endforeach; ?>
+                                                            <?php if (count($project['recommended_courses']) > 3): ?>
+                                                                <small class="text-muted">+<?php echo count($project['recommended_courses']) - 3; ?> more...</small>
+                                                            <?php endif; ?>
+                                                        </div>
+                                                    <?php endif; ?>
+                                                </div>
+                                            </div>
+                                            
+                                            <!-- Required Courses Row (if any) -->
+                                            <?php if (!empty($project['required_courses'])): ?>
+                                                <div class="row mt-3">
+                                                    <div class="col-12">
+                                                        <h6 class="text-muted mb-2">Required Courses:</h6>
+                                                        <?php foreach ($project['required_courses'] as $course): ?>
+                                                            <span class="badge bg-danger me-1 mb-1">
+                                                                <?php echo htmlspecialchars($course['title']); ?>
+                                                            </span>
+                                                        <?php endforeach; ?>
+                                                    </div>
+                                                </div>
+                                            <?php endif; ?>
+                                        </div>
+                                        
+                                        <!-- Project Video (Right Side) -->
+                                        <div class="col-md-2">
+                                            <?php if (!empty($project['video_url']) || !empty($project['video_embed_code'])): ?>
+                                                <div class="position-relative">
+                                                    <?php
+                                                    // Process video URL
+                                                    $videoThumb = '';
+                                                    $videoType = '';
+                                                    
+                                                    if (!empty($project['video_embed_code'])) {
+                                                        // Custom embed code - show generic video icon
+                                                        $videoType = 'embed';
+                                                    } elseif (!empty($project['video_url'])) {
+                                                        $url = $project['video_url'];
+                                                        
+                                                        // YouTube
+                                                        if (preg_match('/(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]+)/', $url, $matches)) {
+                                                            $videoId = $matches[1];
+                                                            $videoThumb = "https://img.youtube.com/vi/{$videoId}/hqdefault.jpg";
+                                                            $videoType = 'youtube';
+                                                        }
+                                                        // Vimeo
+                                                        elseif (preg_match('/vimeo\.com\/(\d+)/', $url, $matches)) {
+                                                            $videoType = 'vimeo';
+                                                            // Vimeo thumbnails require API, show generic
+                                                        }
+                                                        // Other video
+                                                        else {
+                                                            $videoType = 'other';
+                                                        }
+                                                    }
+                                                    ?>
+                                                    
+                                                    <?php if ($videoThumb): ?>
+                                                        <img src="<?php echo htmlspecialchars($videoThumb); ?>" 
+                                                             class="img-fluid rounded" alt="Project video thumbnail"
+                                                             style="width: 100%; height: 120px; object-fit: cover;">
+                                                    <?php else: ?>
+                                                        <div class="bg-secondary rounded d-flex align-items-center justify-content-center" 
+                                                             style="width: 100%; height: 120px;">
+                                                            <i class="bi bi-play-circle display-4 text-white"></i>
+                                                        </div>
+                                                    <?php endif; ?>
+                                                    
+                                                    <div class="position-absolute top-50 start-50 translate-middle">
+                                                        <i class="bi bi-play-circle-fill text-white" style="font-size: 2.5rem; filter: drop-shadow(0 0 10px rgba(0,0,0,0.5));"></i>
+                                                    </div>
+                                                    
+                                                    <div class="text-center mt-2">
+                                                        <small class="text-muted">
+                                                            <i class="bi bi-camera-video"></i> Introduction Video
+                                                        </small>
+                                                    </div>
+                                                </div>
+                                            <?php else: ?>
+                                                <div class="text-center text-muted">
+                                                    <i class="bi bi-camera-video display-4"></i>
+                                                    <p class="small mt-2">No video available</p>
+                                                </div>
+                                            <?php endif; ?>
+                                        </div>
+                                    </div>
+                                </div>
+                            <?php endforeach; ?>
+                        </div>
+                    <?php endif; ?>
+                    
+                    <!-- Pagination for My Projects -->
+                    <?php if ($totalMyPages > 1): ?>
+                        <nav aria-label="My Projects pagination" class="mt-4">
+                            <ul class="pagination justify-content-center">
+                                <?php if ($myProjectsPage > 1): ?>
+                                    <li class="page-item">
+                                        <a class="page-link" href="?my_page=<?php echo $myProjectsPage - 1; ?><?php echo $availableProjectsPage > 1 ? '&available_page=' . $availableProjectsPage : ''; ?>" aria-label="Previous">
+                                            <span aria-hidden="true">&laquo;</span>
+                                        </a>
+                                    </li>
+                                <?php endif; ?>
+                                
+                                <?php for ($i = 1; $i <= $totalMyPages; $i++): ?>
+                                    <li class="page-item <?php echo $i == $myProjectsPage ? 'active' : ''; ?>">
+                                        <a class="page-link" href="?my_page=<?php echo $i; ?><?php echo $availableProjectsPage > 1 ? '&available_page=' . $availableProjectsPage : ''; ?>">
+                                            <?php echo $i; ?>
+                                        </a>
+                                    </li>
+                                <?php endfor; ?>
+                                
+                                <?php if ($myProjectsPage < $totalMyPages): ?>
+                                    <li class="page-item">
+                                        <a class="page-link" href="?my_page=<?php echo $myProjectsPage + 1; ?><?php echo $availableProjectsPage > 1 ? '&available_page=' . $availableProjectsPage : ''; ?>" aria-label="Next">
+                                            <span aria-hidden="true">&raquo;</span>
+                                        </a>
+                                    </li>
+                                <?php endif; ?>
+                            </ul>
+                        </nav>
+                        
+                        <!-- Pagination info -->
+                        <div id="my-projects-pagination-info" class="text-center text-muted small">
+                            Showing <?php echo $myProjectsOffset + 1; ?> to <?php echo min($myProjectsOffset + $projectsPerPage, $totalMyProjects); ?> of <?php echo $totalMyProjects; ?> projects
+                        </div>
+                    <?php endif; ?>
+                </div>
+                
+                <!-- All Projects Tab -->
+                <div class="tab-pane fade show active" id="all-projects" role="tabpanel">
+                    <?php if (empty($availableProjects)): ?>
+                        <div id="no-available-projects-alert" class="alert alert-info fade-in">
+                            <i class="bi bi-info-circle"></i>
+                            No projects have been created yet.
+                        </div>
+                    <?php else: ?>
+                        <div id="available-projects-list" class="list-group">
+                            <?php foreach ($availableProjects as $project): ?>
+                                <div id="available-project-item-<?php echo $project['id']; ?>" class="list-group-item mb-3 border-success project-item" data-required-skills="<?php echo htmlspecialchars(json_encode($project['required_skill_ids'])); ?>">
+                                    <div class="row">
+                                        <!-- Project Information (Left Side) -->
+                                        <div id="all-project-info-<?php echo $project['id']; ?>" class="col-md-5">
+                                            <h5 class="mb-2 d-flex justify-content-between align-items-center">
+                                                <span>
+                                                    <i class="bi bi-folder text-success me-2"></i>
+                                                    <?php echo htmlspecialchars($project['name']); ?>
+                                                </span>
+                                                <span class="d-flex align-items-center">
+                                                    <small class="text-muted me-3">
+                                                        <i class="bi bi-people"></i> <?php echo $project['member_count']; ?> members
+                                                        (<?php echo $project['working_count']; ?> working, <?php echo $project['completed_count']; ?> completed)
+                                                    </small>
+                                                    <?php if ($project['status'] == 'planning'): ?>
+                                                        <span class="badge bg-warning text-dark">Planning</span>
+                                                    <?php endif; ?>
+                                                    <?php if ($projectObj->isMember($project['id'], getCurrentUserId())): ?>
+                                                        <span class="badge bg-primary">Member</span>
+                                                    <?php else: ?>
+                                                        <span class="badge bg-success">Open for Joining</span>
+                                                    <?php endif; ?>
+                                                </span>
+                                            </h5>
+                                            <p class="card-text"><?php echo htmlspecialchars($project['description'] ?? 'No description available'); ?></p>
+                                            <div class="mb-2">
+                                                <?php if ($project['course_code']): ?>
+                                                    <span class="badge bg-secondary me-1"><?php echo htmlspecialchars($project['course_code']); ?></span>
+                                                <?php endif; ?>
+                                            </div>
+                                        </div>
+                                        
+                                        <!-- Skills and Courses (Middle) -->
+                                        <div id="all-project-skills-<?php echo $project['id']; ?>" class="col-md-5">
+                                            <div class="row">
+                                                <!-- Required Skills Column -->
+                                                <div class="col-md-6">
+                                                    <?php if (!empty($project['skills'])): ?>
+                                                        <div>
+                                                            <h6 class="text-muted mb-2">Required Skills:</h6>
+                                                            <?php foreach ($project['skills'] as $skill): ?>
+                                                                <span class="badge bg-<?php echo $skill['importance_level'] == 'required' ? 'danger' : ($skill['importance_level'] == 'preferred' ? 'warning' : 'info'); ?> me-1 mb-1">
+                                                                    <?php echo htmlspecialchars($skill['name']); ?>
+                                                                    <?php if ($skill['importance_level'] == 'required'): ?>*<?php endif; ?>
+                                                                </span>
+                                                            <?php endforeach; ?>
+                                                        </div>
+                                                    <?php endif; ?>
+                                                </div>
+                                                
+                                                <!-- Recommended Courses Column -->
+                                                <div class="col-md-6">
+                                                    <?php if (!empty($project['recommended_courses'])): ?>
+                                                        <div>
+                                                            <h6 class="text-muted mb-2">Recommended Courses:</h6>
+                                                            <?php foreach (array_slice($project['recommended_courses'], 0, 3) as $course): ?>
+                                                                <div class="d-flex align-items-center mb-1">
+                                                                    <i class="bi bi-book text-muted me-2"></i>
+                                                                    <a href="/course-detail.php?id=<?php echo $course['id']; ?>" class="text-decoration-none">
+                                                                        <?php echo htmlspecialchars($course['title']); ?>
+                                                                    </a>
+                                                                    <span class="ms-2 badge bg-secondary"><?php echo $course['matching_skills']; ?> skills</span>
+                                                                </div>
+                                                            <?php endforeach; ?>
+                                                            <?php if (count($project['recommended_courses']) > 3): ?>
+                                                                <small class="text-muted">+<?php echo count($project['recommended_courses']) - 3; ?> more...</small>
+                                                            <?php endif; ?>
+                                                        </div>
+                                                    <?php endif; ?>
+                                                </div>
+                                            </div>
+                                            
+                                            <!-- Required Courses Row (if any) -->
+                                            <?php if (!empty($project['required_courses'])): ?>
+                                                <div class="row mt-3">
+                                                    <div class="col-12">
+                                                        <h6 class="text-muted mb-2">Required Courses:</h6>
+                                                        <?php foreach ($project['required_courses'] as $course): ?>
+                                                            <span class="badge bg-danger me-1 mb-1">
+                                                                <?php echo htmlspecialchars($course['title']); ?>
+                                                            </span>
+                                                        <?php endforeach; ?>
+                                                    </div>
+                                                </div>
+                                            <?php endif; ?>
+                                        </div>
+                                        
+                                        <!-- Project Video (Right Side) -->
+                                        <div class="col-md-2">
+                                            <?php if (!empty($project['video_url']) || !empty($project['video_embed_code'])): ?>
+                                                <div class="position-relative">
+                                                    <?php
+                                                    // Process video URL
+                                                    $videoThumb = '';
+                                                    $videoType = '';
+                                                    
+                                                    if (!empty($project['video_embed_code'])) {
+                                                        // Custom embed code - show generic video icon
+                                                        $videoType = 'embed';
+                                                    } elseif (!empty($project['video_url'])) {
+                                                        $url = $project['video_url'];
+                                                        
+                                                        // YouTube
+                                                        if (preg_match('/(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]+)/', $url, $matches)) {
+                                                            $videoId = $matches[1];
+                                                            $videoThumb = "https://img.youtube.com/vi/{$videoId}/hqdefault.jpg";
+                                                            $videoType = 'youtube';
+                                                        }
+                                                        // Vimeo
+                                                        elseif (preg_match('/vimeo\.com\/(\d+)/', $url, $matches)) {
+                                                            $videoType = 'vimeo';
+                                                            // Vimeo thumbnails require API, show generic
+                                                        }
+                                                        // Other video
+                                                        else {
+                                                            $videoType = 'other';
+                                                        }
+                                                    }
+                                                    ?>
+                                                    
+                                                    <?php if ($videoThumb): ?>
+                                                        <img src="<?php echo htmlspecialchars($videoThumb); ?>" 
+                                                             class="img-fluid rounded" alt="Project video thumbnail"
+                                                             style="width: 100%; height: 120px; object-fit: cover;">
+                                                    <?php else: ?>
+                                                        <div class="bg-secondary rounded d-flex align-items-center justify-content-center" 
+                                                             style="width: 100%; height: 120px;">
+                                                            <i class="bi bi-play-circle display-4 text-white"></i>
+                                                        </div>
+                                                    <?php endif; ?>
+                                                    
+                                                    <div class="position-absolute top-50 start-50 translate-middle">
+                                                        <i class="bi bi-play-circle-fill text-white" style="font-size: 2.5rem; filter: drop-shadow(0 0 10px rgba(0,0,0,0.5));"></i>
+                                                    </div>
+                                                    
+                                                    <div class="text-center mt-2">
+                                                        <small class="text-muted">
+                                                            <i class="bi bi-camera-video"></i> Introduction Video
+                                                        </small>
+                                                    </div>
+                                                </div>
+                                            <?php else: ?>
+                                                <div class="text-center text-muted">
+                                                    <i class="bi bi-camera-video display-4"></i>
+                                                    <p class="small mt-2">No video available</p>
+                                                </div>
+                                            <?php endif; ?>
+                                        </div>
+                                    </div>
+                                </div>
+                            <?php endforeach; ?>
+                        </div>
+                    <?php endif; ?>
+                    
+                    <!-- Pagination for All Projects -->
+                    <?php if ($totalAllPages > 1): ?>
+                        <nav aria-label="Available Projects pagination" class="mt-4">
+                            <ul class="pagination justify-content-center">
+                                <?php if ($availableProjectsPage > 1): ?>
+                                    <li class="page-item">
+                                        <a class="page-link" href="?available_page=<?php echo $availableProjectsPage - 1; ?><?php echo $myProjectsPage > 1 ? '&my_page=' . $myProjectsPage : ''; ?>" aria-label="Previous">
+                                            <span aria-hidden="true">&laquo;</span>
+                                        </a>
+                                    </li>
+                                <?php endif; ?>
+                                
+                                <?php for ($i = 1; $i <= $totalAllPages; $i++): ?>
+                                    <li class="page-item <?php echo $i == $availableProjectsPage ? 'active' : ''; ?>">
+                                        <a class="page-link" href="?available_page=<?php echo $i; ?><?php echo $myProjectsPage > 1 ? '&my_page=' . $myProjectsPage : ''; ?>">
+                                            <?php echo $i; ?>
+                                        </a>
+                                    </li>
+                                <?php endfor; ?>
+                                
+                                <?php if ($availableProjectsPage < $totalAllPages): ?>
+                                    <li class="page-item">
+                                        <a class="page-link" href="?available_page=<?php echo $availableProjectsPage + 1; ?><?php echo $myProjectsPage > 1 ? '&my_page=' . $myProjectsPage : ''; ?>" aria-label="Next">
+                                            <span aria-hidden="true">&raquo;</span>
+                                        </a>
+                                    </li>
+                                <?php endif; ?>
+                            </ul>
+                        </nav>
+                        
+                        <!-- Pagination info -->
+                        <div id="available-projects-pagination-info" class="text-center text-muted small">
+                            Showing <?php echo $allProjectsOffset + 1; ?> to <?php echo min($allProjectsOffset + $projectsPerPage, $totalAllProjects); ?> of <?php echo $totalAllProjects; ?> projects
+                        </div>
+                    <?php endif; ?>
+                </div>
+            </div>
+
+</main>
+
+<!-- Create Project Modal -->
+<div class="modal fade" id="createProjectModal" tabindex="-1" aria-labelledby="createProjectModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="createProjectModalLabel">Create New Project</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <form method="POST" action="/projects.php">
+                <input type="hidden" name="action" value="create">
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label for="name" class="form-label">Project Name *</label>
+                        <input type="text" class="form-control" id="name" name="name" required>
+                    </div>
+                    <div class="mb-3">
+                        <label for="description" class="form-label">Description</label>
+                        <textarea class="form-control" id="description" name="description" rows="3"></textarea>
+                    </div>
+                    <div class="mb-3">
+                        <label for="course_code" class="form-label">Course Code</label>
+                        <input type="text" class="form-control" id="course_code" name="course_code" placeholder="e.g., CS101">
+                    </div>
+                    <div class="mb-3">
+                        <label for="git_repository_url" class="form-label">Git Repository URL <span class="text-muted">(Optional)</span></label>
+                        <input type="url" class="form-control" id="git_repository_url" name="git_repository_url" placeholder="https://github.com/username/repository.git">
+                        <small class="form-text text-muted">You can add or change this later in project settings</small>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" id="submitProjectBtn" class="btn btn-primary" disabled>Create Project</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const form = document.querySelector('#createProjectModal form');
+    const submitBtn = document.getElementById('submitProjectBtn');
+    const nameField = document.getElementById('name');
+    
+    function validateProjectForm() {
+        const name = nameField.value.trim();
+        const isValid = name !== '';
+        
+        submitBtn.disabled = !isValid;
+        
+        if (isValid) {
+            submitBtn.classList.remove('btn-secondary');
+            submitBtn.classList.add('btn-primary');
+        } else {
+            submitBtn.classList.remove('btn-primary');
+            submitBtn.classList.add('btn-secondary');
+        }
+    }
+    
+    // Add event listener to required field
+    nameField.addEventListener('input', validateProjectForm);
+    
+    // Initial validation
+    validateProjectForm();
+    
+    // Reset form when modal is closed
+    document.getElementById('createProjectModal').addEventListener('hidden.bs.modal', function() {
+        form.reset();
+        validateProjectForm();
+    });
+    
+    // Handle tab switching with pagination state preservation
+    const tabLinks = document.querySelectorAll('[data-bs-toggle="tab"]');
+    tabLinks.forEach(function(tabLink) {
+        tabLink.addEventListener('click', function(e) {
+            // Update URL hash to remember active tab
+            const targetTab = this.getAttribute('data-bs-target');
+            if (targetTab) {
+                history.replaceState(null, null, window.location.pathname + window.location.search + targetTab);
+            }
+        });
+    });
+    
+    // Skill filter functionality
+    const skillFilter = document.getElementById('skillFilter');
+    const projectItems = document.querySelectorAll('.project-item');
+    
+    skillFilter.addEventListener('change', function() {
+        const selectedSkillId = this.value;
+        let visibleCount = 0;
+        
+        projectItems.forEach(function(item) {
+            if (!selectedSkillId || selectedSkillId === '') {
+                // Show all projects if "All Skills" is selected
+                item.style.display = '';
+                visibleCount++;
+            } else {
+                // Get required skills from data attribute
+                const requiredSkills = JSON.parse(item.dataset.requiredSkills || '[]');
+                
+                // Check if selected skill is in required skills
+                if (requiredSkills.includes(parseInt(selectedSkillId))) {
+                    item.style.display = '';
+                    visibleCount++;
+                } else {
+                    item.style.display = 'none';
+                }
+            }
+        });
+        
+        // Show/hide empty state messages
+        const activeTab = document.querySelector('.tab-pane.active');
+        const emptyMessage = activeTab.querySelector('.alert-info');
+        const projectList = activeTab.querySelector('.list-group');
+        
+        if (visibleCount === 0 && selectedSkillId) {
+            // Hide list and show custom message
+            if (projectList) projectList.style.display = 'none';
+            if (!emptyMessage) {
+                const newMessage = document.createElement('div');
+                newMessage.className = 'alert alert-info fade-in skill-filter-message';
+                newMessage.innerHTML = '<i class="bi bi-info-circle"></i> No projects found requiring the selected skill.';
+                activeTab.insertBefore(newMessage, activeTab.firstChild);
+            }
+        } else {
+            // Show list and remove custom message
+            if (projectList) projectList.style.display = '';
+            const filterMessage = activeTab.querySelector('.skill-filter-message');
+            if (filterMessage) filterMessage.remove();
+        }
+    });
+    
+    // Activate correct tab based on URL hash
+    if (window.location.hash) {
+        const targetTab = document.querySelector(`[data-bs-target="${window.location.hash}"]`);
+        if (targetTab) {
+            const tab = new bootstrap.Tab(targetTab);
+            tab.show();
+        }
+    } else {
+        // Default to All Projects tab if no hash
+        const allProjectsTab = document.querySelector('[data-bs-target="#all-projects"]');
+        if (allProjectsTab) {
+            const tab = new bootstrap.Tab(allProjectsTab);
+            tab.show();
+        }
+    }
+    
+    // Make project info divs clickable for My Projects
+    const myProjectInfoDivs = document.querySelectorAll('[id^="my-project-info-"]');
+    myProjectInfoDivs.forEach(function(div) {
+        const projectId = div.id.replace('my-project-info-', '');
+        div.style.cursor = 'pointer';
+        div.addEventListener('click', function(e) {
+            // Don't navigate if clicking on a link or button inside
+            if (e.target.tagName === 'A' || e.target.tagName === 'BUTTON' || e.target.closest('a') || e.target.closest('button')) {
+                return;
+            }
+            window.location.href = '/project-detail.php?id=' + projectId;
+        });
+        
+        // Add hover effect
+        div.addEventListener('mouseenter', function() {
+            this.style.backgroundColor = '#f8f9fa';
+        });
+        div.addEventListener('mouseleave', function() {
+            this.style.backgroundColor = '';
+        });
+    });
+    
+    // Make project info divs clickable for All Projects
+    const allProjectInfoDivs = document.querySelectorAll('[id^="all-project-info-"]');
+    allProjectInfoDivs.forEach(function(div) {
+        const projectId = div.id.replace('all-project-info-', '');
+        div.style.cursor = 'pointer';
+        div.addEventListener('click', function(e) {
+            // Don't navigate if clicking on a link or button inside
+            if (e.target.tagName === 'A' || e.target.tagName === 'BUTTON' || e.target.closest('a') || e.target.closest('button')) {
+                return;
+            }
+            window.location.href = '/project-detail.php?id=' + projectId;
+        });
+        
+        // Add hover effect
+        div.addEventListener('mouseenter', function() {
+            this.style.backgroundColor = '#f8f9fa';
+        });
+        div.addEventListener('mouseleave', function() {
+            this.style.backgroundColor = '';
+        });
+    });
+});
+</script>
+
+<!-- File Upload Modal -->
+<div class="modal fade" id="uploadModal" tabindex="-1" aria-labelledby="uploadModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div id="upload-header" class="modal-header">
+                <h5 class="modal-title" id="uploadModalLabel">
+                    <i class="bi bi-cloud-upload"></i> Upload Artifacts
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div id="upload-project-info" class="alert alert-info mb-3">
+                    <i class="bi bi-info-circle"></i>
+                    <span id="upload-project-name">Project</span>
+                </div>
+                
+                <form id="uploadForm" enctype="multipart/form-data">
+                    <input type="hidden" id="upload-project-id" name="project_id">
+                    
+                    <div class="mb-3">
+                        <div class="file-upload-area" id="file-upload-area-modal">
+                            <div class="file-upload-icon">
+                                <i class="bi bi-cloud-upload"></i>
+                            </div>
+                            <h6>Drag & drop files here or click to browse</h6>
+                            <p class="text-muted small mb-2">
+                                Supported: PDF, DOC, DOCX, XLS, XLSX, PPT, PPTX, TXT, images, code files, archives<br>
+                                Maximum size: 50MB per file
+                            </p>
+                            <input type="file" id="file-input-modal" class="d-none" multiple 
+                                   accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.rtf,.csv,.json,.xml,.html,.css,.js,.php,.py,.java,.cpp,.c,.h,.md,.zip,.rar,.7z,.tar,.gz,.jpg,.jpeg,.png,.gif,.bmp,.svg,.mp3,.mp4,.avi,.mov,.wmv,.flv,.webm,.ogg">
+                            <button type="button" class="btn btn-outline-primary mt-2" onclick="document.getElementById('file-input-modal').click()">
+                                <i class="bi bi-plus-circle"></i> Select Files
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div id="selected-files" class="mb-3" style="display: none;">
+                        <label class="form-label">Selected Files:</label>
+                        <div id="selected-files-list"></div>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="file-description-modal" class="form-label">Description (optional)</label>
+                        <textarea class="form-control" id="file-description-modal" rows="2" 
+                                placeholder="Add a description for these files..."></textarea>
+                    </div>
+                    
+                    <div class="file-upload-progress mt-3" id="upload-progress-modal" style="display: none;">
+                        <div class="file-upload-progress-bar" id="upload-progress-bar-modal"></div>
+                    </div>
+                    <div id="upload-message-modal"></div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" id="upload-btn-modal" disabled>
+                    <i class="bi bi-upload"></i> Upload Files
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Files View Modal -->
+<div class="modal fade" id="filesModal" tabindex="-1" aria-labelledby="filesModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div id="files-header" class="modal-header">
+                <h5 class="modal-title" id="filesModalLabel">
+                    <i class="bi bi-files"></i> Project Files & Artifacts
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div id="files-project-info" class="alert alert-info mb-3">
+                    <i class="bi bi-info-circle"></i>
+                    <span id="files-project-name">Project</span>
+                </div>
+                
+                <div class="file-stats" id="file-stats-modal" style="display: none;">
+                    <div class="file-stats-item">
+                        <i class="bi bi-files"></i>
+                        <span id="file-count-modal">0 files</span>
+                    </div>
+                    <div class="file-stats-item">
+                        <i class="bi bi-hdd"></i>
+                        <span id="total-size-modal">0 B</span>
+                    </div>
+                    <div class="file-stats-item">
+                        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="loadProjectFiles()">
+                            <i class="bi bi-arrow-clockwise"></i> Refresh
+                        </button>
+                    </div>
+                </div>
+                
+                <div id="file-list-modal">
+                    <div class="text-center py-4">
+                        <div class="file-loading"></div>
+                        <p class="mt-2 text-muted">Loading files...</p>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                <button type="button" class="btn btn-primary" onclick="showUploadModal(currentProjectId, currentProjectName)">
+                    <i class="bi bi-cloud-upload"></i> Upload More Files
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- File Management JavaScript -->
+<script>
+let currentProjectId = null;
+let currentProjectName = '';
+let selectedFiles = [];
+
+// Show upload modal
+function showUploadModal(projectId, projectName) {
+    currentProjectId = projectId;
+    currentProjectName = projectName;
+    
+    document.getElementById('upload-project-id').value = projectId;
+    document.getElementById('upload-project-name').textContent = projectName;
+    
+    // Reset form
+    document.getElementById('uploadForm').reset();
+    document.getElementById('selected-files').style.display = 'none';
+    document.getElementById('upload-btn-modal').disabled = true;
+    document.getElementById('upload-message-modal').innerHTML = '';
+    selectedFiles = [];
+    
+    new bootstrap.Modal(document.getElementById('uploadModal')).show();
+}
+
+// Show files modal
+function showProjectFiles(projectId, projectName) {
+    currentProjectId = projectId;
+    currentProjectName = projectName;
+    
+    document.getElementById('files-project-name').textContent = projectName;
+    
+    new bootstrap.Modal(document.getElementById('filesModal')).show();
+    loadProjectFiles();
+}
+
+// Load project files
+async function loadProjectFiles() {
+    if (!currentProjectId) return;
+    
+    const fileList = document.getElementById('file-list-modal');
+    const fileStats = document.getElementById('file-stats-modal');
+    
+    fileList.innerHTML = `
+        <div class="text-center py-4">
+            <div class="file-loading"></div>
+            <p class="mt-2 text-muted">Loading files...</p>
+        </div>
+    `;
+    
+    try {
+        const response = await fetch(`/api/file-list.php?entity_type=project&entity_id=${currentProjectId}`);
+        const result = await response.json();
+        
+        if (result.success) {
+            displayProjectFiles(result.files);
+            updateProjectFileStats(result.stats);
+        } else {
+            throw new Error(result.error);
+        }
+    } catch (error) {
+        fileList.innerHTML = `
+            <div class="alert alert-danger">
+                <i class="bi bi-exclamation-triangle"></i>
+                Failed to load files: ${error.message}
+            </div>
+        `;
+    }
+}
+
+// Display project files
+function displayProjectFiles(files) {
+    const fileList = document.getElementById('file-list-modal');
+    
+    if (files.length === 0) {
+        fileList.innerHTML = `
+            <div class="text-center py-4 text-muted">
+                <i class="bi bi-inbox" style="font-size: 3rem; opacity: 0.3;"></i>
+                <p class="mt-2">No files uploaded yet</p>
+                <small>Upload project artifacts to get started</small>
+            </div>
+        `;
+        return;
+    }
+    
+    const fileListHTML = files.map(file => `
+        <div class="file-list-item" data-file-id="${file.id}">
+            <div class="file-icon">
+                <i class="bi ${file.icon}"></i>
+            </div>
+            <div class="file-info">
+                <div class="file-name">${escapeHtml(file.filename)}</div>
+                <div class="file-meta">
+                    <span><i class="bi bi-hdd"></i> ${file.file_size}</span>
+                    <span><i class="bi bi-calendar"></i> ${file.upload_date}</span>
+                    <span><i class="bi bi-person"></i> ${escapeHtml(file.uploaded_by)}</span>
+                    ${file.download_count > 0 ? `<span><i class="bi bi-download"></i> ${file.download_count} downloads</span>` : ''}
+                </div>
+                ${file.description ? `<div class="file-description">"${escapeHtml(file.description)}"</div>` : ''}
+            </div>
+            <div class="file-actions">
+                <button type="button" class="btn btn-sm btn-outline-primary" 
+                        onclick="downloadFile(${file.id})" 
+                        title="Download file">
+                    <i class="bi bi-download"></i>
+                </button>
+                ${file.can_delete ? `
+                    <button type="button" class="btn btn-sm btn-outline-danger" 
+                            onclick="deleteProjectFile(${file.id})" 
+                            title="Delete file">
+                        <i class="bi bi-trash"></i>
+                    </button>
+                ` : ''}
+            </div>
+        </div>
+    `).join('');
+    
+    fileList.innerHTML = fileListHTML;
+}
+
+// Update file stats
+function updateProjectFileStats(stats) {
+    const fileStats = document.getElementById('file-stats-modal');
+    
+    if (stats.file_count > 0) {
+        document.getElementById('file-count-modal').textContent = 
+            `${stats.file_count} file${stats.file_count !== 1 ? 's' : ''}`;
+        document.getElementById('total-size-modal').textContent = 
+            formatFileSize(stats.total_size || 0);
+        fileStats.style.display = 'flex';
+    } else {
+        fileStats.style.display = 'none';
+    }
+}
+
+// Download file
+function downloadFile(fileId) {
+    window.open(`/api/file-download.php?id=${fileId}`, '_blank');
+}
+
+// Delete file
+async function deleteProjectFile(fileId) {
+    if (!confirm('Are you sure you want to delete this file?')) {
+        return;
+    }
+    
+    try {
+        const response = await fetch('/api/file-upload.php', {
+            method: 'DELETE',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: `file_id=${fileId}`
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            // Remove file from display
+            const fileElement = document.querySelector(`[data-file-id="${fileId}"]`);
+            if (fileElement) {
+                fileElement.remove();
+            }
+            
+            // Reload files to update stats
+            loadProjectFiles();
+            
+            showMessage('File deleted successfully!', 'success');
+        } else {
+            throw new Error(result.error);
+        }
+    } catch (error) {
+        showMessage(`Failed to delete file: ${error.message}`, 'error');
+    }
+}
+
+// File upload handling
+document.addEventListener('DOMContentLoaded', function() {
+    const uploadArea = document.getElementById('file-upload-area-modal');
+    const fileInput = document.getElementById('file-input-modal');
+    const uploadBtn = document.getElementById('upload-btn-modal');
+    
+    // Drag and drop
+    uploadArea.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        uploadArea.classList.add('dragover');
+    });
+    
+    uploadArea.addEventListener('dragleave', (e) => {
+        e.preventDefault();
+        uploadArea.classList.remove('dragover');
+    });
+    
+    uploadArea.addEventListener('drop', (e) => {
+        e.preventDefault();
+        uploadArea.classList.remove('dragover');
+        handleFileSelect(e.dataTransfer.files);
+    });
+    
+    // Click to upload area
+    uploadArea.addEventListener('click', (e) => {
+        if (e.target === uploadArea || e.target.closest('.file-upload-icon, h6')) {
+            fileInput.click();
+        }
+    });
+    
+    // File input change
+    fileInput.addEventListener('change', (e) => {
+        handleFileSelect(e.target.files);
+    });
+    
+    // Upload button
+    uploadBtn.addEventListener('click', uploadFiles);
+});
+
+function handleFileSelect(files) {
+    selectedFiles = Array.from(files);
+    
+    if (selectedFiles.length === 0) {
+        document.getElementById('selected-files').style.display = 'none';
+        document.getElementById('upload-btn-modal').disabled = true;
+        return;
+    }
+    
+    const filesList = document.getElementById('selected-files-list');
+    const filesInfo = selectedFiles.map(file => 
+        `<div class="small text-muted mb-1">
+            <i class="bi bi-file-earmark"></i> ${file.name} (${formatFileSize(file.size)})
+         </div>`
+    ).join('');
+    
+    filesList.innerHTML = filesInfo;
+    document.getElementById('selected-files').style.display = 'block';
+    document.getElementById('upload-btn-modal').disabled = false;
+}
+
+async function uploadFiles() {
+    if (!selectedFiles || selectedFiles.length === 0) return;
+    
+    const uploadBtn = document.getElementById('upload-btn-modal');
+    const progressContainer = document.getElementById('upload-progress-modal');
+    const progressBar = document.getElementById('upload-progress-bar-modal');
+    const message = document.getElementById('upload-message-modal');
+    const description = document.getElementById('file-description-modal').value.trim();
+    
+    uploadBtn.disabled = true;
+    progressContainer.style.display = 'block';
+    message.innerHTML = '';
+    
+    try {
+        for (let i = 0; i < selectedFiles.length; i++) {
+            const file = selectedFiles[i];
+            const progress = ((i + 1) / selectedFiles.length) * 100;
+            
+            progressBar.style.width = progress + '%';
+            
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('entity_type', 'project');
+            formData.append('entity_id', currentProjectId);
+            formData.append('description', description);
+            
+            const response = await fetch('/api/file-upload.php', {
+                method: 'POST',
+                body: formData
+            });
+            
+            const result = await response.json();
+            
+            if (!result.success) {
+                throw new Error(`Failed to upload ${file.name}: ${result.error}`);
+            }
+        }
+        
+        message.innerHTML = `
+            <div class="file-upload-message success">
+                <i class="bi bi-check-circle"></i> 
+                Successfully uploaded ${selectedFiles.length} file(s)!
+            </div>
+        `;
+        
+        // Reset form and close modal after success
+        setTimeout(() => {
+            bootstrap.Modal.getInstance(document.getElementById('uploadModal')).hide();
+        }, 2000);
+        
+    } catch (error) {
+        message.innerHTML = `
+            <div class="file-upload-message error">
+                <i class="bi bi-exclamation-triangle"></i> 
+                ${error.message}
+            </div>
+        `;
+    } finally {
+        uploadBtn.disabled = false;
+        progressContainer.style.display = 'none';
+        progressBar.style.width = '0%';
+    }
+}
+
+// Utility functions
+function formatFileSize(bytes) {
+    if (bytes === 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(1024));
+    return Math.round((bytes / Math.pow(1024, i)) * 100) / 100 + ' ' + units[i];
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function showMessage(message, type = 'info') {
+    const messageEl = document.createElement('div');
+    messageEl.className = `alert alert-${type} alert-dismissible fade show`;
+    messageEl.innerHTML = `
+        ${message}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    `;
+    
+    // Insert at top of modal body
+    const modalBody = document.querySelector('#filesModal .modal-body');
+    modalBody.insertBefore(messageEl, modalBody.firstChild);
+    
+    // Auto dismiss after 5 seconds
+    setTimeout(() => {
+        if (messageEl.parentNode) {
+            messageEl.remove();
+        }
+    }, 5000);
+}
+
+// Feature recommendation functions
+function showFeatureModal(projectId, projectName) {
+    currentProjectId = projectId;
+    currentProjectName = projectName;
+    
+    document.getElementById('feature-project-name').textContent = projectName;
+    document.getElementById('feature-project-id').value = projectId;
+    
+    // Reset form
+    document.getElementById('featureForm').reset();
+    document.getElementById('feature-message').innerHTML = '';
+    
+    new bootstrap.Modal(document.getElementById('featureModal')).show();
+}
+
+async function submitFeature() {
+    const title = document.getElementById('feature-title').value.trim();
+    const description = document.getElementById('feature-description').value.trim();
+    const priority = document.getElementById('feature-priority').value;
+    const projectId = document.getElementById('feature-project-id').value;
+    
+    if (!title || !description) {
+        document.getElementById('feature-message').innerHTML = `
+            <div class="alert alert-warning">
+                <i class="bi bi-exclamation-triangle"></i> Please fill in all required fields.
+            </div>
+        `;
+        return;
+    }
+    
+    const submitBtn = document.getElementById('submit-feature-btn');
+    const originalText = submitBtn.innerHTML;
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = '<i class="bi bi-hourglass-split"></i> Submitting...';
+    
+    try {
+        const formData = new FormData();
+        formData.append('title', title);
+        formData.append('description', description);
+        formData.append('priority', priority);
+        formData.append('project_id', projectId);
+        formData.append('action', 'create');
+        
+        const response = await fetch('/api/feature-create.php', {
+            method: 'POST',
+            body: formData
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            document.getElementById('feature-message').innerHTML = `
+                <div class="alert alert-success">
+                    <i class="bi bi-check-circle"></i> Feature recommendation submitted successfully!
+                </div>
+            `;
+            
+            // Close modal after success
+            setTimeout(() => {
+                bootstrap.Modal.getInstance(document.getElementById('featureModal')).hide();
+            }, 2000);
+        } else {
+            throw new Error(result.error || 'Failed to submit feature recommendation');
+        }
+        
+    } catch (error) {
+        document.getElementById('feature-message').innerHTML = `
+            <div class="alert alert-danger">
+                <i class="bi bi-exclamation-triangle"></i> ${error.message}
+            </div>
+        `;
+    } finally {
+        submitBtn.disabled = false;
+        submitBtn.innerHTML = originalText;
+    }
+}
+</script>
+
+<!-- Feature Recommendation Modal -->
+<div class="modal fade" id="featureModal" tabindex="-1" aria-labelledby="featureModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div id="feature-header" class="modal-header">
+                <h5 class="modal-title" id="featureModalLabel">
+                    <i class="bi bi-lightbulb"></i> Recommend Feature
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="alert alert-info mb-3">
+                    <i class="bi bi-info-circle"></i>
+                    Recommending feature for: <strong><span id="feature-project-name">Project</span></strong>
+                </div>
+                
+                <form id="featureForm">
+                    <input type="hidden" id="feature-project-id" name="project_id">
+                    
+                    <div class="mb-3">
+                        <label for="feature-title" class="form-label">Feature Title *</label>
+                        <input type="text" class="form-control" id="feature-title" name="title" required
+                               placeholder="Brief descriptive title for the feature">
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="feature-description" class="form-label">Description *</label>
+                        <textarea class="form-control" id="feature-description" name="description" rows="4" required
+                                  placeholder="Detailed description of the feature, its benefits, and how it should work..."></textarea>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="feature-priority" class="form-label">Priority</label>
+                        <select class="form-select" id="feature-priority" name="priority">
+                            <option value="low">Low - Nice to have</option>
+                            <option value="medium" selected>Medium - Would improve workflow</option>
+                            <option value="high">High - Important for project success</option>
+                            <option value="critical">Critical - Project depends on this</option>
+                        </select>
+                    </div>
+                </form>
+                
+                <div id="feature-message"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" id="submit-feature-btn" onclick="submitFeature()">
+                    <i class="bi bi-lightbulb"></i> Submit Recommendation
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+/* Make project info sections visually clickable */
+[id^="my-project-info-"], [id^="all-project-info-"] {
+    transition: background-color 0.2s ease, transform 0.1s ease;
+    border-radius: 0.375rem;
+    padding: 0.5rem;
+    margin: -0.5rem;
+}
+
+[id^="my-project-info-"]:hover, [id^="all-project-info-"]:hover {
+    background-color: #f8f9fa;
+    transform: translateY(-1px);
+}
+
+/* Add subtle shadow on hover */
+.list-group-item:has([id^="my-project-info-"]:hover),
+.list-group-item:has([id^="all-project-info-"]:hover) {
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+</style>
+
+<?php require_once 'includes/footer.php'; ?>

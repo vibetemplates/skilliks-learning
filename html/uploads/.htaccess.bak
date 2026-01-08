@@ -1,0 +1,5 @@
+# Simple security rules for upload directory
+# Allow access to images and documents only
+
+# Prevent directory browsing
+Options -Indexes

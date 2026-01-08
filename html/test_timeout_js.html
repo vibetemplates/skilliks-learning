@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Timeout Test</title>
+</head>
+<body>
+    <div id="test-container">
+        <h1>JavaScript Timeout Test</h1>
+        <button id="test1-btn" onclick="test1()">Test 1: Simple Timeout (3 seconds)</button>
+        <button id="test2-btn" onclick="test2()">Test 2: Clear Timeout</button>
+        <button id="test3-btn" onclick="test3()">Test 3: Multiple Timeouts</button>
+        <button id="test4-btn" onclick="testLongRunning()">Test 4: Long Running Process</button>
+        <div id="output"></div>
+    </div>
+
+    <script>
+        const output = document.getElementById('output');
+        let timeoutId;
+
+        function log(message) {
+            const time = new Date().toLocaleTimeString();
+            output.innerHTML += `<p>[${time}] ${message}</p>`;
+        }
+
+        function test1() {
+            log('Starting simple timeout test (3 seconds)...');
+            setTimeout(() => {
+                log('Timeout executed after 3 seconds!');
+            }, 3000);
+        }
+
+        function test2() {
+            log('Setting timeout for 5 seconds...');
+            timeoutId = setTimeout(() => {
+                log('This should not appear - timeout was cancelled!');
+            }, 5000);
+            
+            setTimeout(() => {
+                clearTimeout(timeoutId);
+                log('Timeout cancelled after 2 seconds');
+            }, 2000);
+        }
+
+        function test3() {
+            log('Starting multiple timeouts...');
+            setTimeout(() => log('First timeout: 1 second'), 1000);
+            setTimeout(() => log('Second timeout: 2 seconds'), 2000);
+            setTimeout(() => log('Third timeout: 3 seconds'), 3000);
+        }
+
+        function testLongRunning() {
+            log('Starting long-running process with timeout protection...');
+            const maxTime = 5000; // 5 seconds max
+            const startTime = Date.now();
+            let iterations = 0;
+
+            const timeoutProtection = setTimeout(() => {
+                log(`Process timed out after ${maxTime/1000} seconds! Iterations: ${iterations}`);
+            }, maxTime);
+
+            // Simulate long-running process
+            const interval = setInterval(() => {
+                iterations++;
+                const elapsed = Date.now() - startTime;
+                
+                if (elapsed >= maxTime - 100) {
+                    clearInterval(interval);
+                    clearTimeout(timeoutProtection);
+                    log(`Process completed just before timeout. Iterations: ${iterations}`);
+                }
+            }, 100);
+        }
+    </script>
+</body>
+</html>

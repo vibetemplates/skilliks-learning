@@ -1,0 +1,11 @@
+{
+    "require": {
+        "google/apiclient": "^2.0",
+        "mailersend/mailersend": "^0.34.0"
+    },
+    "config": {
+        "allow-plugins": {
+            "php-http/discovery": true
+        }
+    }
+}

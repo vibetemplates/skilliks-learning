@@ -1,0 +1,3 @@
+# Simple test
+RewriteEngine On
+RewriteRule ^testme$ /test-clean-urls.php [L]
